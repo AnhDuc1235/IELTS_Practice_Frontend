@@ -1,32 +1,95 @@
-import React, { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import authService from '@/services/authService';
+import { TAuthTokens, TUser } from '@/type/auth';
+import { getCookie, setCookie, removeCookie } from '@/utils/cookies';
 
-interface AuthContextType {
-  user: any;
+type TAuthContext = {
+  user: TUser | null;
   isAuthenticated: boolean;
-  login: (token: string, user: any) => void;
-  logout: () => void;
-}
+  isLoading: boolean; // true khi đang kiểm tra phiên đăng nhập từ cookie
+  login: (tokens: TAuthTokens) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  setUser: (user: TUser | null) => void;
+};
 
-const AuthContext = createContext<AuthContextType>({} as AuthContextType);
+const AuthContext = createContext<TAuthContext>({} as TAuthContext);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<any>(null);
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<TUser | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const login = (token: string, userData: any) => {
-    localStorage.setItem('accessToken', token);
-    setUser(userData);
+  // Lấy thông tin người dùng từ GET /profile
+  const refreshUser = async () => {
+    const res = await authService.getProfile();
+    setUser(res.data);
   };
 
-  const logout = () => {
+  // Mở web: Kiểm tra nếu có token trong Cookie thì khôi phục phiên đăng nhập
+  useEffect(() => {
+    const restoreSession = async () => {
+      const token = getCookie('accessToken') || localStorage.getItem('accessToken');
+      if (token) {
+        try {
+          await refreshUser();
+        } catch {
+          // Token không hợp lệ thì xoá sạch cookie
+          removeCookie('accessToken');
+          removeCookie('refreshToken');
+          localStorage.removeItem('accessToken');
+          localStorage.removeItem('refreshToken');
+          setUser(null);
+        }
+      }
+      setIsLoading(false);
+    };
+
+    restoreSession();
+  }, []);
+
+  // Đăng nhập: Lưu accessToken & refreshToken vào Cookies
+  const login = async (tokens: TAuthTokens) => {
+    setCookie('accessToken', tokens.accessToken);
+    setCookie('refreshToken', tokens.refreshToken);
+    localStorage.setItem('accessToken', tokens.accessToken);
+    localStorage.setItem('refreshToken', tokens.refreshToken);
+    await refreshUser();
+  };
+
+  // Đăng xuất: Gọi API và xoá sạch tokens trong Cookies
+  const logout = async () => {
+    try {
+      const token = getCookie('accessToken');
+      if (token) {
+        await authService.logout();
+      }
+    } catch {
+      // API lỗi vẫn dọn sạch cookie ở client
+    }
+
+    removeCookie('accessToken');
+    removeCookie('refreshToken');
     localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
     setUser(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        isAuthenticated: !!user,
+        isLoading,
+        login,
+        logout,
+        refreshUser,
+        setUser,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
-};
+}
 
 export const useAuth = () => useContext(AuthContext);
+export { AuthContext };
